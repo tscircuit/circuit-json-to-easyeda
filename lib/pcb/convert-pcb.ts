@@ -2,6 +2,7 @@ import type {
   CircuitJson,
   PcbBoard,
   PcbComponent,
+  PcbCutout,
   PcbHole,
   PcbPlatedHole,
   PcbPort,
@@ -17,8 +18,9 @@ import {
   EasyEdaHole,
   EasyEdaLibrary,
   EasyEdaPad,
-  type EasyEdaShape,
   EasyEdaPcbText,
+  type EasyEdaShape,
+  EasyEdaSolidRegion,
   EasyEdaTrack,
   EasyEdaVia,
 } from "easyedats/lib/index"
@@ -564,6 +566,106 @@ function createStandaloneHoles(circuitJson: CircuitJson): EasyEdaHole[] {
     })
 }
 
+function rotatePointAround(
+  point: Point,
+  center: Point,
+  ccwRotationDegrees: number,
+): Point {
+  const radians = (ccwRotationDegrees * Math.PI) / 180
+  const dx = point.x - center.x
+  const dy = point.y - center.y
+  return {
+    x: center.x + dx * Math.cos(radians) - dy * Math.sin(radians),
+    y: center.y + dx * Math.sin(radians) + dy * Math.cos(radians),
+  }
+}
+
+function getRectangularCutoutPoints(
+  cutout: Extract<PcbCutout, { shape: "rect" }>,
+): Point[] {
+  const halfWidth = cutout.width / 2
+  const halfHeight = cutout.height / 2
+  const corners = [
+    { x: cutout.center.x - halfWidth, y: cutout.center.y - halfHeight },
+    { x: cutout.center.x + halfWidth, y: cutout.center.y - halfHeight },
+    { x: cutout.center.x + halfWidth, y: cutout.center.y + halfHeight },
+    { x: cutout.center.x - halfWidth, y: cutout.center.y + halfHeight },
+  ]
+  const rotation = cutout.rotation ?? 0
+  if (!rotation) return corners
+  return corners.map((corner) =>
+    rotatePointAround(corner, cutout.center, rotation),
+  )
+}
+
+function createCutoutSolidRegion(
+  points: Point[],
+  cutoutId: string,
+): EasyEdaSolidRegion {
+  const easyEdaPoints = points.map(toEasyEdaPoint)
+  const first = easyEdaPoints[0]
+  const last = easyEdaPoints.at(-1)
+  if (first && last && (first.x !== last.x || first.y !== last.y)) {
+    easyEdaPoints.push(first)
+  }
+  return new EasyEdaSolidRegion({
+    fields: [
+      "10",
+      "",
+      easyEdaPoints.map((point) => `${point.x} ${point.y}`).join(" "),
+      "cutout",
+      toEasyEdaShapeId(cutoutId),
+    ],
+  })
+}
+
+function createCutoutShapes(params: {
+  circuitJson: CircuitJson
+  diagnostics: CircuitJsonToEasyEdaDiagnostic[]
+}): EasyEdaShape[] {
+  const shapes: EasyEdaShape[] = []
+  for (const cutout of params.circuitJson.filter(
+    (element): element is PcbCutout => element.type === "pcb_cutout",
+  )) {
+    if (cutout.shape === "circle") {
+      const point = toEasyEdaPoint(cutout.center)
+      shapes.push(
+        new EasyEdaHole({
+          fields: [
+            String(point.x),
+            String(point.y),
+            String(toEasyEdaLength(cutout.radius * 2)),
+            toEasyEdaShapeId(cutout.pcb_cutout_id),
+          ],
+        }),
+      )
+      continue
+    }
+    if (cutout.shape === "rect") {
+      shapes.push(
+        createCutoutSolidRegion(
+          getRectangularCutoutPoints(cutout),
+          cutout.pcb_cutout_id,
+        ),
+      )
+      continue
+    }
+    if (cutout.shape === "polygon") {
+      shapes.push(createCutoutSolidRegion(cutout.points, cutout.pcb_cutout_id))
+      continue
+    }
+    params.diagnostics.push({
+      code: "unsupported-element",
+      severity: "warning",
+      message:
+        "Path pcb_cutout slots are not mapped to an EasyEDA HOLE or SOLIDREGION cutout.",
+      circuitElementType: "pcb_cutout",
+      circuitElementId: cutout.pcb_cutout_id,
+    })
+  }
+  return shapes
+}
+
 export function convertPcbCircuitJson(params: {
   circuitJson: CircuitJson
   title: string
@@ -601,5 +703,11 @@ export function convertPcbCircuitJson(params: {
     shapes.push(...createTraceShapes(trace))
   }
   shapes.push(...createStandaloneHoles(params.circuitJson))
+  shapes.push(
+    ...createCutoutShapes({
+      circuitJson: params.circuitJson,
+      diagnostics: params.diagnostics,
+    }),
+  )
   return createEasyEdaPcbDocument({ title: params.title, shapes })
 }
