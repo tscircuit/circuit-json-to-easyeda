@@ -24,7 +24,8 @@ console.log(result.diagnostics)
 ## Initial coverage
 
 - schematic components, source metadata, pins, and routed wires
-- PCB board outlines, components, SMT pads, plated holes, and mounting holes
+- PCB board outlines, components, SMT pads, plated holes, mounting holes, and
+  board cutouts (`pcb_cutout` circle/rect/polygon)
 - PCB copper traces and vias
 - top and bottom silkscreen paths, lines, and text
 - source reference designators, manufacturer part numbers, and JLCPCB part
